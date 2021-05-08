@@ -22,27 +22,40 @@ print(stopwords.words('spanish'))
 categories
 # %%
 stop_words = stop_words + ['d', 'l', 'al', 'del', 'a', 'dels', 'als']
+
+misspellings = {
+    "anul la": "anulla",
+    "col loca": "colloca",
+    "tal laci": "tallaci",
+    "al legac": "allegac",
+    "parcel lac": "parcellac",
+    "col labora": "collabora",
+    "sol lici": "sollici"
+}
 # %%
 stop_words
 # %%
 
 
 
-def preprocess_str(x, remove_words):
+def preprocess_str(x, remove_words, misspellings):
     regex_remove = r'\b(?:{})\b'.format('|'.join(remove_words))
 
     x = x.copy()
     x = x.str.lower()
     x = x.str.replace(r"[\']", " ' ")
     x = x.str.replace(r"[^\w\s]", '')
+    for wrong, right in misspellings.items():
+        x = x.str.replace(wrong, right)
     x = x.str.replace(regex_remove, '')
+    x = x.str.replace(r"\s+", " ")
     return x
 
-categories["target_title"] = preprocess_str(categories["target_title"], stop_words)
-train["title"] = preprocess_str(train["title"], stop_words)
-test["title"] = preprocess_str(test["title"], stop_words)
+categories["target_title"] = preprocess_str(categories["target_title"], stop_words, misspellings)
+train["title"] = preprocess_str(train["title"], stop_words, misspellings)
+test["title"] = preprocess_str(test["title"], stop_words, misspellings)
 # %%
-categories
+train.to_csv("data/train_cleanead.csv", index=False)
 
 # %%
 def n_match_target(x, set_target):
@@ -107,8 +120,11 @@ test_X_feats = pd.concat([test_X.drop(columns=["title"]), pd.DataFrame(text_test
 # %%
 lr = LogisticRegression()
 lr.fit(train_X_feats, train_y)
-# %%
 
+# %%
+f1_score(lr.predict(train_X_feats), train_y, average='micro')
+
+# %%
 f1_score(lr.predict(val_X_feats), val_y, average='micro')
 # %%
 test_predictions = lr.predict(test_X_feats)
