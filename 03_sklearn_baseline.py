@@ -7,7 +7,10 @@ from stop_words import get_stop_words
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklego.preprocessing import ColumnSelector, ColumnDropper
 from sklearn.metrics import f1_score
+from sktools.matrix_denser import MatrixDenser
 
 stop_words = get_stop_words('catalan')
 # %%
@@ -61,20 +64,54 @@ train.describe()
 train, val = train_test_split(train) 
 # %%
 train_y = train.code.astype('str')
-train_X = train.drop(columns={"code", "title"})
-test_X = test.drop(columns={"title", "ID"})
+train_X = train.drop(columns={"code"}).reset_index(drop=True)
+test_X = test.drop(columns={"ID"}).reset_index(drop=True)
 val_y = val.code.astype('str')
-val_X = val.drop(columns={"code", "title"})
+val_X = val.drop(columns={"code"}).reset_index(drop=True)
 
+
+# %%
+train_X.shape
+# %%
+# pipeline = Pipeline([
+#     ("ml_features", FeatureUnion([
+#         ("p1", Pipeline([
+#             ("grab1", ColumnSelector(columns="title")),
+#             ("mod1", text.CountVectorizer(max_features=1000)),
+#             ("dense", MatrixDenser())
+#         ])),
+#         # ("p2", Pipeline([
+#         #     ("grab2", ColumnDropper(columns=["title"])),
+#         # ]))
+#     ])),
+#     # ("lr", LogisticRegression())
+# ])
+
+transformer_title = Pipeline([
+    ("mod1", text.CountVectorizer(max_features=1000)),
+    ("dense", MatrixDenser())
+])
+
+
+text_train = transformer_title.fit_transform(train_X.loc[:, "title"])
+text_val = transformer_title.transform(val_X.loc[:, "title"])
+text_test = transformer_title.transform(test_X.loc[:, "title"])
+# %%
+pd.DataFrame(text_train)
+train_X
+# %%
+train_X_feats = pd.concat([train_X.drop(columns=["title"]), pd.DataFrame(text_train)], axis=1)
+val_X_feats = pd.concat([val_X.drop(columns=["title"]), pd.DataFrame(text_val)], axis=1)
+test_X_feats = pd.concat([test_X.drop(columns=["title"]), pd.DataFrame(text_test)], axis=1)
 
 # %%
 lr = LogisticRegression()
-lr.fit(train_X, train_y)
+lr.fit(train_X_feats, train_y)
 # %%
 
-f1_score(lr.predict(val_X), val_y, average='micro')
+f1_score(lr.predict(val_X_feats), val_y, average='micro')
 # %%
-test_predictions = lr.predict(test_X)
+test_predictions = lr.predict(test_X_feats)
 # %%
 test["ID"]
 # %%
@@ -82,5 +119,6 @@ submission = test.copy().loc[:, ["ID"]]
 # %%
 submission["Codi QdC"] = test_predictions
 # %%
-submission.to_csv("submissions/first_model.csv", index=False)
+submission.to_csv("submissions/model_with_text_feats.csv", index=False)
+
 # %%
