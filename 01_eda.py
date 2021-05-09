@@ -3,6 +3,7 @@
 import spacy
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 # %%
 nlp = spacy.load("ca_fasttext_wiki_md")
@@ -15,6 +16,10 @@ categories = pd.read_csv("data/categories.csv").drop(columns="Unnamed: 0").renam
 train
 # %%
 train.merge(categories)
+# %%
+train.title.mode().values
+# %%
+test.merge(train, on='title').groupby("ID").agg({"code": lambda x: x.mode().values[0]})
 # %%
 
 print(len(train["code"].unique()))
@@ -62,17 +67,20 @@ def get_text_emb(question, nlp):
         return nlp.vocab[question].vector
 
 # %%
-train_embeddings = [
-    get_text_emb(doc, nlp) for doc in train.title
-]
-# %%
-test_embeddings = [
-    get_text_emb(doc, nlp) for doc in test.title
-]
+train_embeddings = []
+for doc in tqdm(train.title):
+    train_embeddings.append(get_text_emb(doc, nlp))
+
 
 # %%
-categories_embeddings = [
-    get_text_emb(doc, nlp) for doc in categories.["Títol de entrada del catàleg"]
-]
+test_embeddings = []
+for doc in tqdm(test.title):
+    test_embeddings.append(get_text_emb(doc, nlp))
+
 
 # %%
+train_df = pd.DataFrame(train_embeddings)
+test_df = pd.DataFrame(test_embeddings)
+
+train_df.to_csv("features/spacy_train.csv", index=False)
+test_df.to_csv("features/spacy_test.csv", index=False)
