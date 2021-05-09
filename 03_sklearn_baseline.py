@@ -23,6 +23,20 @@ full_train = pd.read_csv("data/train.csv").rename(columns={"TÍTOL": "title", "C
 full_test = pd.read_csv("data/test.csv").rename(columns={"TÍTOL": "title", "Codi QdC": "code"})
 categories = pd.read_csv("data/categories.csv").drop(columns="Unnamed: 0").rename(columns={"Codi QdC": "code", "Títol de entrada del catàleg": "target_title"})
 
+full_train.shape
+
+full_title = full_train.title
+
+# %%
+spacy_train = pd.read_csv("features/spacy_train.csv")
+spacy_test = pd.read_csv("features/spacy_test.csv")
+# %%
+spacy_train.columns = [f"spacy_{col}" for col in spacy_train.columns]
+spacy_test.columns = [f"spacy_{col}" for col in spacy_test.columns]
+# %%
+
+full_train = pd.concat([full_train, spacy_train], axis=1)
+full_test = pd.concat([full_test, spacy_test], axis=1)
 # %%
 # IDEAS:
 # MAJUSCULES
@@ -30,6 +44,9 @@ categories = pd.read_csv("data/categories.csv").drop(columns="Unnamed: 0").renam
 # SANT JORDI
 # SINGULARS
 # TRAIN FULL
+# TRANSFORM FULL + TEST
+# ERROR ANALYSIS
+# LESS TRAINING
 
 stop_words = stop_words + ['d', 'l', 'al', 'del', 'a', 'dels', 'als', 'deun', 'deuna']
 
@@ -65,12 +82,17 @@ def preprocess_str(x, remove_words, misspellings):
         x = x.str.replace(wrong, right)
     x = x.str.replace(regex_remove, '')
     x = x.str.replace(r"\s+", " ")
+    x = x.str.replace(r"s ", " ")
+    # x = x.str.replace(r"s$", "")
+    # TODO: REMOVE OR EOF s
     return x
 
 categories["target_title"] = preprocess_str(categories["target_title"], stop_words, misspellings)
 full_train["title"] = preprocess_str(full_train["title"], stop_words, misspellings)
 full_test["title"] = preprocess_str(full_test["title"], stop_words, misspellings)
 
+
+full_train.loc[:, ["title", "code"]].merge(categories, how='left', on='code').sort_values(['code', "title"]).to_csv("data/train_cleanead.csv", index=False)
 # %%
 def n_match_target(x, set_target):
     set_x = set(x.split())
@@ -79,16 +101,17 @@ def n_match_target(x, set_target):
 # %%
 full_train_cats = full_train.merge(categories, on='code').target_title.unique()
 # %%
-for i, target in tqdm(enumerate(full_train_cats)):
+full_train.title
+# %%
+for i, target in tqdm(enumerate(list(full_train_cats))):
     set_target = set(target.split())
-    # n_match_target("lolo", set_target)
     full_train[f"title_{i}_match"] = full_train.title.apply(lambda x: n_match_target(x, set_target))
     full_test[f"title_{i}_match"] = full_test.title.apply(lambda x: n_match_target(x, set_target))
 # %%
-full_train.describe()
+full_train.loc[:, ["title", "code"]].merge(categories, how='left', on='code').sort_values(['code', "title"]).to_csv("data/train_super_cleanead.csv", index=False)
 # %%
 
-train, val = train_test_split(full_train) 
+train, val = train_test_split(full_train)
 test = full_test.copy()
 val["ID"] = val.index
 # %%
@@ -99,7 +122,6 @@ test_modes = (test.merge(full_train_simple, on='title').groupby("ID").agg({"code
 
 # %%
 val = val.merge(val_modes, how='left', on='ID', suffixes=('', '_pred'))
-
 # %%
 test = test.merge(test_modes, how='left', on='ID')
 # %%
@@ -117,7 +139,7 @@ val_X = val.drop(columns=["code", "code_pred", "ID"]).reset_index(drop=True)
 
 
 # %%
-train_X.shape
+test_X.loc[:, "title"]
 # %%
 transformer_title = Pipeline([
     ("mod1", text.CountVectorizer(max_features=1000)),
@@ -136,14 +158,15 @@ test_X_feats = pd.concat([test_X.drop(columns=["title"]), pd.DataFrame(text_test
 # %%
 lr = LogisticRegression()
 lr.fit(train_X_feats, train_y)
+lr_cp = lr
 # %%
-val_preds_raw = lr.predict(val_X_feats)
-val_preds = lr.predict(val_X_feats)
+val_preds_raw = lr_cp.predict(val_X_feats)
+val_preds = lr_cp.predict(val_X_feats)
 val_preds[val.code_pred.notnull()] = val.code_pred[val.code_pred.notnull()]
 val_preds = val_preds.astype("int").astype("str")
 print(f1_score(val_preds, val_y, average='micro'))
 print(f1_score(val_preds_raw, val_y, average='micro'))
-print(f1_score(lr.predict(train_X_feats), train_y, average='micro'))
+print(f1_score(lr_cp.predict(train_X_feats), train_y, average='micro'))
 
 # %%
 # lgb = LGBMClassifier()
@@ -152,7 +175,7 @@ print(f1_score(lr.predict(train_X_feats), train_y, average='micro'))
 # print(f1_score(lgb.predict(train_X_feats), train_y, average='micro'))
 
 # %%
-test_predictions = lr.predict(test_X_feats)
+test_predictions = lr_cp.predict(test_X_feats)
 test_predictions[test.code.notnull()] = test.code[test.code.notnull()]
 # %%
 test_predictions
@@ -163,7 +186,6 @@ submission = test.copy().loc[:, ["ID"]]
 # %%
 submission["Codi QdC"] = test_predictions.astype("int")
 # %%
-# submission
-submission.to_csv("submissions/05_matching.csv", index=False)
+submission.to_csv("submissions/06_spacy_features.csv", index=False)
 
 # %%
