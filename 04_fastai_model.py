@@ -6,20 +6,28 @@ from sklearn.feature_extraction import text
 from stop_words import get_stop_words
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from lightgbm import LGBMClassifier
-from sklearn.pipeline import Pipeline, FeatureUnion
-from sklego.preprocessing import ColumnSelector, ColumnDropper
+from sklearn.pipeline import Pipeline
 from sklearn.metrics import f1_score
 from sktools.matrix_denser import MatrixDenser
 import random
+from sklearn.preprocessing import MinMaxScaler
+from utils.rank import GaussRankScaler
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from torch import nn
+
 
 random.seed(42)
 np.random.seed(42)
 
+
 pd.set_option('display.max_rows', 500)
 stop_words = get_stop_words('catalan')
 submit = False
+
 # %%
 full_train = pd.read_csv("data/train.csv").rename(columns={"TÍTOL": "title", "Codi QdC": "code"})
 full_test = pd.read_csv("data/test.csv").rename(columns={"TÍTOL": "title", "Codi QdC": "code"})
@@ -52,6 +60,7 @@ full_test = pd.concat([full_test, spacy_test], axis=1)
 # TRANSFORM FULL + TEST
 # ERROR ANALYSIS
 # LESS TRAINING
+# FROM 1, 3 to 1 or 1, 2
 
 stop_words = stop_words + ['d', 'l', 'al', 'del', 'a', 'dels', 'als', 'deun', 'deuna']
 
@@ -129,10 +138,12 @@ for i, target in tqdm(enumerate(list(full_train_cats))):
 full_train.loc[:, ["title", "code"]].merge(categories, how='left', on='code').sort_values(['code', "title"]).to_csv("data/train_super_cleanead.csv", index=False)
 # %%
 
-train, val = train_test_split(full_train, train_size=0.2, stratify=full_train.code)
+train, val = train_test_split(full_train, train_size=0.8, stratify=full_train.code)
 test = full_test.copy()
+# %%
 val = val.copy()
 val["ID"] = val.index
+# val.loc[val.index, ("ID")] = val.index.values
 # %%
 train_simple = train.loc[:, ["title", "code"]]
 full_train_simple = full_train.loc[:, ["title", "code"]]
@@ -163,10 +174,10 @@ val_X = val.drop(columns=["code", "code_pred", "ID"]).reset_index(drop=True)
 
 
 # %%
-test_X.loc[:, "title"]
+val["ID"]
 # %%
 transformer_title = Pipeline([
-    ("mod1", text.CountVectorizer(max_features=1000)),
+    ("mod1", text.CountVectorizer(max_features=1500, ngram_range=(1, 3))),
     ("dense", MatrixDenser())
 ])
 
@@ -177,6 +188,7 @@ text_train = transformer_title.transform(train_X.loc[:, "title"])
 text_full = transformer_title.transform(full_X.loc[:, "title"])
 text_val = transformer_title.transform(val_X.loc[:, "title"])
 text_test = transformer_title.transform(test_X.loc[:, "title"])
+
 # %%
 train_X_feats = pd.concat([train_X.drop(columns=["title"]), pd.DataFrame(text_train)], axis=1)
 full_X_feats = pd.concat([full_X.drop(columns=["title"]), pd.DataFrame(text_full)], axis=1)
@@ -184,33 +196,171 @@ val_X_feats = pd.concat([val_X.drop(columns=["title"]), pd.DataFrame(text_val)],
 test_X_feats = pd.concat([test_X.drop(columns=["title"]), pd.DataFrame(text_test)], axis=1)
 
 # %%
-train_y
-# %%
-lr = LogisticRegression()
-lr.fit(train_X_feats, train_y)
-lr_cp = lr
+full_train_test = pd.concat([full_X_feats, test_X_feats], axis=0)
+mn = MinMaxScaler().fit(full_train_test)
 
 # %%
-val_preds_raw = lr_cp.predict(val_X_feats)
-val_preds = lr_cp.predict(val_X_feats)
+
+train_X_feats = mn.transform(train_X_feats)
+full_X_feats = mn.transform(full_X_feats)
+val_X_feats = mn.transform(val_X_feats)
+test_X_feats = mn.transform(test_X_feats)
+
+# %%
+class2idx = {cat: i for i, cat in enumerate(full_y.unique())}
+
+# %%
+train_y = train_y.replace(class2idx)
+val_y = val_y.replace(class2idx)
+full_y = full_y.replace(class2idx)
+# %%
+
+
+class ClassifierDataset(Dataset):
+
+    def __init__(self, X_data, y_data):
+        self.X_data = X_data
+        self.y_data = y_data
+
+    def __getitem__(self, index):
+        return self.X_data[index], self.y_data[index]
+
+    def __len__(self):
+        return len(self.X_data)
+
+
+full_dataset = ClassifierDataset(torch.from_numpy(full_X_feats).float(), torch.from_numpy(full_y.values).long())
+train_dataset = ClassifierDataset(torch.from_numpy(train_X_feats).float(), torch.from_numpy(train_y.values).long())
+val_dataset = ClassifierDataset(torch.from_numpy(val_X_feats).float(), torch.from_numpy(val_y.values).long())
+test_dataset = ClassifierDataset(torch.from_numpy(test_X_feats).float(), torch.from_numpy(np.array([0] * test_X_feats.shape[0])).long())
+# %%
+train_X_feats.shape
+# %%
+class MLP(pl.LightningModule):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(train_X_feats.shape[1], 64),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Linear(in_features=64, out_features=64, bias=False),
+            # nn.Dropout(0.95),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Linear(in_features=64, out_features=32, bias=False),
+            # nn.Dropout(0.8),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Linear(32, len(class2idx))
+        )
+        self.ce = nn.CrossEntropyLoss()
+
+    def forward(self, x):
+        return self.layers(x)
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self.layers(x)
+        # f1 = f1_score(
+        #     pd.Series(y_hat.detach().numpy()).astype('str'),
+        #     pd.Series(y.detach().numpy()).astype('str'),
+        #     average='micro'
+        # )
+        loss = self.ce(y_hat, y)
+        self.log('train_loss', loss)
+        # self.log('train_f1', f1)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self.layers(x)
+        loss = self.ce(y_hat, y)
+        self.log('val_loss', loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-3)
+        return optimizer
+
+# %%
+
+mlp = MLP()
+# max_epochs = 15
+max_epochs = 5
+
+early_stop_callback = EarlyStopping(
+   monitor='val_loss',
+   min_delta=0.00,
+   patience=5,
+   verbose=False,
+   mode='min'
+)
+
+trainer = pl.Trainer(
+    auto_scale_batch_size='power', 
+    gpus=0, 
+    deterministic=True, 
+    callbacks=[early_stop_callback],
+    max_epochs=max_epochs)
+
+# %%
+trainer.fit(
+    mlp,
+    DataLoader(dataset=train_dataset, batch_size=256), 
+    val_dataloaders=DataLoader(dataset=val_dataset, batch_size=256)
+)
+
+
+# %%
+
+def model_predict(mdl, dataset):
+
+    y_pred_list = []
+    with torch.no_grad():
+        mdl.eval()
+        for X_batch, _ in DataLoader(dataset):
+            X_batch = X_batch.to('cpu')
+            y_test_pred = mdl(X_batch)
+            _, y_pred_tags = torch.max(y_test_pred, dim=1)
+            y_pred_list.append(y_pred_tags.cpu().numpy())
+
+    y_pred_list = [a.squeeze().tolist() for a in y_pred_list]
+
+    return y_pred_list
+
+
+y_pred_list = model_predict(mlp, val_dataset)
+
+# %%
+idx2class = {v: k for k, v in class2idx.items()}
+
+# %%
+
+val_preds_raw = pd.Series(y_pred_list).replace(idx2class)
+val_preds = pd.Series(y_pred_list).replace(idx2class)
+val_y_raw = pd.Series(val_y).replace(idx2class)
+
+
+# %%
 val_preds[val.code_pred.notnull()] = val.code_pred[val.code_pred.notnull()]
 val_preds = val_preds.astype("int").astype("str")
-print(f1_score(val_preds, val_y, average='micro'))
-print(f1_score(val_preds_raw, val_y, average='micro'))
-print(f1_score(lr_cp.predict(train_X_feats), train_y, average='micro'))
+print(f1_score(val_preds, val_y_raw, average='micro'))
+print(f1_score(val_preds_raw, val_y_raw, average='micro'))
+# print(f1_score(lr_cp.predict(train_X_feats), train_y, average='micro'))
+
+
 
 # %%
-# lgb = LGBMClassifier()
-# lgb.fit(train_X_feats, train_y)
-# print(f1_score(lgb.predict(val_X_feats), val_y, average='micro'))
-# print(f1_score(lgb.predict(train_X_feats), train_y, average='micro'))
-
 if submit:
-    lr = LogisticRegression()
-    lr.fit(full_X_feats, full_y)
-    lr_cp = lr
+    mlp = MLP()
+    max_epochs = 6
+    trainer = pl.Trainer(auto_scale_batch_size='power', gpus=0, deterministic=True, max_epochs=max_epochs)
+    trainer.fit(mlp, DataLoader(dataset=full_dataset, batch_size=256))
+
+
 # %%
-test_predictions = lr_cp.predict(test_X_feats)
+test_predictions = model_predict(mlp, test_dataset)
+test_predictions = pd.Series(test_predictions).replace(idx2class)
 test_predictions[test.code.notnull()] = test.code[test.code.notnull()]
 # %%
 test_predictions
@@ -220,9 +370,10 @@ test["ID"]
 submission = test.copy().loc[:, ["ID"]]
 # %%
 submission["Codi QdC"] = test_predictions.astype("int")
+submission["Codi QdC"]
 # %%
 if submit:
-    submission.to_csv("submissions/07_small_iterations.csv", index=False)
+    submission.to_csv("submissions/08_first_nn.csv", index=False)
 
 # %%
 
