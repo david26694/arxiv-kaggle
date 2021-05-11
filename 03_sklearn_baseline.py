@@ -91,6 +91,14 @@ misspellings = [
     (" deo", "de o"),
     (" denari", "dinari"),
     ("menja der", "menjador"),
+    (" ders", "dors"),
+    (" deres", "dores"),
+    ("ce der ", "cedir "),
+    ("ci der ", "cidir "),
+    ("u der", "udir"),
+    ("mone der", "moneder"),
+    (" der ", "dor ")
+
 ]
 # %%
 stop_words
@@ -288,7 +296,7 @@ submission = test.copy().loc[:, ["ID"]]
 submission["Codi QdC"] = test_predictions.astype("int")
 # %%
 if submit:
-    submission.to_csv("submissions/13_test_transformer_01.csv", index=False)
+    submission.to_csv("submissions/14_conteni_der.csv", index=False)
 
 # %%
 
