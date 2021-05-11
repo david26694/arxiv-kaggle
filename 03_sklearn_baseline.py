@@ -80,8 +80,17 @@ misspellings = [
     ("dehabitatges", "de habitatges"),
     ("regula deres", "reguladores"),
     ("proce dement", "procediment"),
-    ("decumenta", "documenta")
-
+    ("decumenta", "documenta"),
+    # ("deobra", "de obra"),
+    # ("deocupa", "de ocupa"),
+    ("e defi", "edifi"),
+    # ("deinforme", "de informe"),
+    # ("deincoa", "de incoa"),
+    # ("deinfra", "de infra"),
+    (" dein", " de in"),
+    (" deo", "de o"),
+    (" denari", "dinari"),
+    ("menja der", "menjador"),
 ]
 # %%
 stop_words
@@ -117,6 +126,8 @@ def preprocess_str(x, remove_words, misspellings):
     x = x.str.replace(r"( psc | ciu | euia | pp | erc | pp | icv | ciuta dens | deerc | deicv | p decat | comú po dem | ciu denos )", " POLITICAL_PARTY ")
     x = x.str.replace(r"\d{8,}", "LONG_NUMBER")
     x = x.str.replace(r"\d+", "SHORT_NUMBER")
+    x = x.str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8')
+
 
     return x
 
@@ -184,11 +195,11 @@ val_X = val.drop(columns=["code", "code_pred", "ID"]).reset_index(drop=True)
 test_X.loc[:, "title"]
 # %%
 transformer_title = Pipeline([
-    ("mod1", text.CountVectorizer(max_features=1000)),
+    ("mod1", text.CountVectorizer(max_features=1000, ngram_range=(1, 1))),
     ("dense", MatrixDenser())
 ])
 
-full_train_test = pd.concat([full_X, test_X], axis=0)
+full_train_test = pd.concat([test_X], axis=0)
 transformer_title.fit(full_train_test.loc[:, "title"])
 
 text_train = transformer_title.transform(train_X.loc[:, "title"])
@@ -202,7 +213,7 @@ transformer_title = Pipeline([
     ("dense", MatrixDenser())
 ])
 
-full_train_test = pd.concat([full_X, test_X], axis=0)
+full_train_test = pd.concat([test_X], axis=0)
 transformer_title.fit(full_train_test.loc[:, "title_raw"])
 
 text_train_raw = transformer_title.transform(train_X.loc[:, "title_raw"])
@@ -235,9 +246,6 @@ full_X_feats = single_feats(full_X_feats).drop(columns=["title", "title_raw"])
 val_X_feats = single_feats(val_X_feats).drop(columns=["title", "title_raw"])
 test_X_feats = single_feats(test_X_feats).drop(columns=["title", "title_raw"])
 # %%
-train_X_feats.describe()
-
-# %%
 ss = StandardScaler().fit(full_X_feats)
 
 # %%
@@ -246,10 +254,6 @@ full_X_feats = ss.transform(full_X_feats)
 val_X_feats = ss.transform(val_X_feats)
 test_X_feats = ss.transform(test_X_feats)
 
-# %%
-pd.DataFrame(train_X_feats).describe()
-
-train_y.describe()
 # %%
 lr = LogisticRegression(C=0.0075)
 lr.fit(train_X_feats, train_y)
@@ -265,8 +269,9 @@ print(f1_score(val_preds_raw, val_y, average='micro'))
 print(f1_score(lr_cp.predict(train_X_feats), train_y, average='micro'))
 
 # %%
+submit = True
 if submit:
-    lr = LogisticRegression(C=0.0075)
+    lr = LogisticRegression(C=0.01)
     lr.fit(full_X_feats, full_y)
     lr_cp = lr
 # %%
@@ -283,7 +288,7 @@ submission = test.copy().loc[:, ["ID"]]
 submission["Codi QdC"] = test_predictions.astype("int")
 # %%
 if submit:
-    submission.to_csv("submissions/11_better_preprocessing.csv", index=False)
+    submission.to_csv("submissions/13_test_transformer_01.csv", index=False)
 
 # %%
 
