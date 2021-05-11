@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 from stop_words import get_stop_words
+from tensorflow.python.keras.layers.core import Dropout
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -10,12 +11,13 @@ from sklearn.metrics import f1_score
 import random
 
 ## Import keras
-from keras import Sequential
-from keras.layers import Embedding, SpatialDropout1D, LSTM, Dense, Flatten, BatchNormalization
+from keras import Sequential, Model
+from keras.layers import Embedding, LSTM, Dense, BatchNormalization, concatenate, Input, Dropout, SpatialDropout1D
 from keras.optimizers import Adam
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.utils import to_categorical
+from tqdm.std import Bar
 
 random.seed(42)
 np.random.seed(42)
@@ -169,7 +171,7 @@ for i, target in tqdm(enumerate(list(full_train_cats))):
 full_train.loc[:, ["title", "code"]].merge(categories, how='left', on='code').sort_values(['code', "title"]).drop_duplicates().to_csv("data/train_super_cleanead.csv", index=False)
 # %%
 
-train, val = train_test_split(full_train, train_size=0.2, stratify=full_train.code)
+train, val = train_test_split(full_train, train_size=0.8, stratify=full_train.code)
 test = full_test.copy()
 val = val.copy()
 val["ID"] = val.index
@@ -218,6 +220,7 @@ full_y = full_y.replace(class2idx)
 tokenizer = Tokenizer(num_words=5000)
 tokenizer.fit_on_texts(full_X.title)
 
+X_full = tokenizer.texts_to_sequences(full_X.title)
 X_train = tokenizer.texts_to_sequences(train_X.title)
 X_val = tokenizer.texts_to_sequences(val_X.title)
 X_test = tokenizer.texts_to_sequences(test_X.title)
@@ -228,6 +231,7 @@ vocab_size = len(tokenizer.word_index) + 1
 # Sentences
 maxlen = 15
 
+X_full = pad_sequences(X_full, padding='post', maxlen=maxlen)
 X_train = pad_sequences(X_train, padding='post', maxlen=maxlen)
 X_val = pad_sequences(X_val, padding='post', maxlen=maxlen)
 X_test = pad_sequences(X_test, padding='post', maxlen=maxlen)
@@ -236,6 +240,7 @@ X_test = pad_sequences(X_test, padding='post', maxlen=maxlen)
 tokenizer = Tokenizer(num_words=5000)
 tokenizer.fit_on_texts(full_X.title_raw)
 
+X_full_raw = tokenizer.texts_to_sequences(full_X.title_raw)
 X_train_raw = tokenizer.texts_to_sequences(train_X.title_raw)
 X_val_raw = tokenizer.texts_to_sequences(val_X.title_raw)
 X_test_raw = tokenizer.texts_to_sequences(test_X.title_raw)
@@ -244,12 +249,14 @@ vocab_size_raw = len(tokenizer.word_index) + 1
 # Adding 1 because of reserved 0 index
 
 
+X_full_raw = pad_sequences(X_full_raw, padding='post', maxlen=maxlen)
 X_train_raw = pad_sequences(X_train_raw, padding='post', maxlen=maxlen)
 X_val_raw = pad_sequences(X_val_raw, padding='post', maxlen=maxlen)
 X_test_raw = pad_sequences(X_test_raw, padding='post', maxlen=maxlen)
 
 
 # %%s
+full_spacy_feats = full_X.filter(regex=r"^spacy.*", axis=1)
 train_spacy_feats = train_X.filter(regex=r"^spacy.*", axis=1)
 val_spacy_feats = val_X.filter(regex=r"^spacy.*", axis=1)
 test_spacy_feats = test_X.filter(regex=r"^spacy.*", axis=1)
@@ -259,72 +266,74 @@ test_spacy_feats = test_X.filter(regex=r"^spacy.*", axis=1)
 embedding_dim = 200
 
 # %%
-title_model = Sequential()
-title_model.add(
-    Embedding(
-        input_dim=vocab_size, 
-        output_dim=embedding_dim, 
-        input_length=maxlen)
-)
-# model.add(SpatialDropout1D(0.5))
-title_model.add(LSTM(100, dropout=0.5, recurrent_dropout=0.5))
+model_1_in = Input(shape=(maxlen,))
+x1 = Embedding(
+    input_dim=vocab_size,
+    output_dim=embedding_dim,
+    input_length=maxlen
+)(model_1_in)
+x1 = SpatialDropout1D(0.5)(x1)
+x1 = LSTM(100, dropout=0.5, recurrent_dropout=0.5)(x1)
+x1 = BatchNormalization()(x1)
 
 # %%
-raw_model = Sequential()
-raw_model.add(
-    Embedding(
-        input_dim=vocab_size_raw, 
-        output_dim=embedding_dim, 
-        input_length=maxlen)
-)
-# model.add(SpatialDropout1D(0.5))
-raw_model.add(LSTM(100, dropout=0.5, recurrent_dropout=0.5))
+model_2_in = Input(shape=(maxlen,))
+x2 = Embedding(
+    input_dim=vocab_size_raw,
+    output_dim=embedding_dim,
+    input_length=maxlen
+)(model_2_in)
+x2 = SpatialDropout1D(0.5)(x2)
+x2 = LSTM(100, dropout=0.5, recurrent_dropout=0.5)(x2)
+x2 = BatchNormalization()(x2)
+
+# %%
+spacy_in = Input(shape=(train_spacy_feats.shape[1],))
+spacy_out = Dense(100)(spacy_in)
+spacy_out = Dropout(0.5)(spacy_out)
 
 
 # %%
-spacy_model = Sequential()
-spacy_model.add(Dense(100))
+
 
 # %%
-model = Sequential()
-model.add(
-    Embedding(
-        input_dim=vocab_size, 
-        output_dim=embedding_dim, 
-        input_length=maxlen)
+concatenated = concatenate([x1, x2, spacy_out])
+out = Dense(len(class2idx), activation='softmax')(concatenated)
+merged_model = Model([model_1_in, model_2_in, spacy_in], out)
+merged_model.compile(
+    optimizer='adam',
+    loss='categorical_crossentropy',
 )
-# model.add(SpatialDropout1D(0.5))
-model.add(LSTM(100, dropout=0.5, recurrent_dropout=0.5))
-model.add(BatchNormalization())
-model.add(Dense(len(class2idx), activation='softmax'))
-model.compile(optimizer='adam',
-              loss='categorical_crossentropy',
-              )
-model.summary()
+merged_model.summary()
 
 # %%
 dummy_train_y = to_categorical(train_y)
 dummy_val_y = to_categorical(val_y)
+dummy_full_y = to_categorical(full_y)
+
+# %%
+val_data_keras = (
+    [X_val, X_val_raw, val_spacy_feats],
+    dummy_val_y
+)
 
 # %%
 # Train neural net
-history = model.fit(
-    X_train,
+history = merged_model.fit(
+    [X_train, X_train_raw, train_spacy_feats],
     dummy_train_y,
-    batch_size=64,
-    epochs=10,
-    validation_data=(X_val, dummy_val_y),
+    batch_size=256,
+    epochs=4,
+    validation_data=val_data_keras,
     verbose=2
 )
 # %%
-val_preds_wide = model.predict(X_val)
-train_preds_wide = model.predict(X_train)
+val_preds_wide = merged_model.predict([X_val, X_val_raw, val_spacy_feats])
+train_preds_wide = merged_model.predict([X_train, X_train_raw, train_spacy_feats])
 # %%
 val_preds_long = np.argmax(val_preds_wide, axis=1)
 train_preds_long = np.argmax(train_preds_wide, axis=1)
 val_preds_long
-# %%
-val_y
 # %%
 print(f1_score(val_preds_long, val_y, average='micro'))
 # print(f1_score(val_preds, val_y, average='micro'))
@@ -333,18 +342,38 @@ print(f1_score(val_preds_long, val_y, average='micro'))
 print(f1_score(train_preds_long, train_y, average='micro'))
 
 # %%
-# lgb = LGBMClassifier()
-# lgb.fit(train_X_feats, train_y)
-# print(f1_score(lgb.predict(val_X_feats), val_y, average='micro'))
-# print(f1_score(lgb.predict(train_X_feats), train_y, average='micro'))
-
+submit = True
 if submit:
-    lr = LogisticRegression()
-    lr.fit(full_X_feats, full_y)
-    lr_cp = lr
+    concatenated = concatenate([x1, x2, spacy_out])
+    out = Dense(len(class2idx), activation='softmax')(concatenated)
+    merged_model = Model([model_1_in, model_2_in, spacy_in], out)
+    merged_model.compile(
+        optimizer='adam',
+        loss='categorical_crossentropy',
+    )
+
+    history = merged_model.fit(
+        [X_full, X_full_raw, full_spacy_feats],
+        dummy_full_y,
+        batch_size=256,
+        epochs=4,
+        validation_data=val_data_keras,
+        verbose=2
+    )
 # %%
-test_predictions = lr_cp.predict(test_X_feats)
+test_preds_wide = merged_model.predict([X_test, X_test_raw, test_spacy_feats])
+test_preds_long = np.argmax(test_preds_wide, axis=1)
+test_predictions = pd.Series(test_preds_long).replace(idx2class)
 test_predictions[test.code.notnull()] = test.code[test.code.notnull()]
+
+# %%
+if submit:
+    df_preds = pd.DataFrame(test_preds_wide)
+    df_preds.columns = idx2class.values()
+    df_preds.to_csv("submissions/stacking/keras_01_preds.csv", index=False)
+    df_preds_val = pd.DataFrame(val_preds_wide)
+    df_preds_val.columns = idx2class.values()
+    df_preds_val.to_csv("submissions/stacking/val_keras_01_preds.csv", index=False)
 # %%
 test_predictions
 # %%
@@ -355,7 +384,7 @@ submission = test.copy().loc[:, ["ID"]]
 submission["Codi QdC"] = test_predictions.astype("int")
 # %%
 if submit:
-    submission.to_csv("submissions/07_small_iterations.csv", index=False)
+    submission.to_csv("submissions/keras_01.csv", index=False)
 
 # %%
 
